@@ -767,10 +767,11 @@ git commit -m "feat: 添加 CLI 入口模块"
 
 ---
 
-### Task 7: 构建与端到端测试
+### Task 7: 构建与全链路测试
 
 **Files:**
-- 无新文件
+- Create: `src/test-e2e.ts`（全链路测试脚本）
+- 无其他新文件
 
 - [ ] **Step 1: 构建**
 
@@ -809,21 +810,203 @@ Run: `npm run build && node dist/index.js 2>&1 | head -5`
 
 预期：输出 `⚡ 智谱 GLM Coding Plan 抢购工具`，然后开始提取 Cookie
 
-- [ ] **Step 5: 提交**
+- [ ] **Step 5: 编写全链路测试脚本**
+
+创建 `src/test-e2e.ts`，非交互式地走完全链路：cookie 提取 → token 验证 → 库存查询 → 强制模拟下单（即使售罄）→ 验证下单失败处理正确。
+
+```ts
+import chalk from "chalk";
+import { extractToken } from "./cookie.js";
+import { ApiClient } from "./api.js";
+import { PLANS, isQuarterlyDiscount } from "./config.js";
+
+async function test() {
+  console.log(chalk.bold.cyan("\n🧪 全链路测试\n"));
+
+  // 1. Cookie 提取
+  process.stdout.write(chalk.white("1. 提取 Chrome Cookie... "));
+  let token: string;
+  try {
+    token = await extractToken();
+    console.log(chalk.green("✓ 通过"));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(chalk.red(`✗ 失败: ${message}`));
+    process.exit(1);
+  }
+
+  const client = new ApiClient(token);
+
+  // 2. Token 验证
+  process.stdout.write(chalk.white("2. 验证 Token... "));
+  try {
+    const info = await client.getCustomerInfo();
+    console.log(chalk.green(`✓ 通过 (${info.nickName})`));
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(chalk.red(`✗ 失败: ${message}`));
+    process.exit(1);
+  }
+
+  // 3. 库存查询
+  process.stdout.write(chalk.white("3. 查询产品库存... "));
+  let targetProductId = "";
+  let targetPayPrice = 0;
+  try {
+    const preview = await client.batchPreview();
+    if (!preview.success) {
+      console.log(chalk.red(`✗ 失败: ${preview.msg}`));
+      process.exit(1);
+    }
+    const products = preview.data.productList;
+    // 找 Pro 季付产品
+    const target = products.find(
+      (p) =>
+        p.monthlyOriginalAmount === PLANS.pro.monthlyOriginalAmount &&
+        isQuarterlyDiscount(p.campaignDiscountDetails)
+    );
+    if (!target) {
+      console.log(chalk.red("✗ 失败: 未找到 Pro 季付产品"));
+      process.exit(1);
+    }
+    targetProductId = target.productId;
+    targetPayPrice = target.payAmount;
+    const soldOutLabel = target.soldOut ? chalk.yellow("售罄") : chalk.green("有库存");
+    console.log(
+      chalk.green(`✓ 通过 (共 ${products.length} 个产品, Pro 季付 ${soldOutLabel}, ID: ${targetProductId})`)
+    );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(chalk.red(`✗ 失败: ${message}`));
+    process.exit(1);
+  }
+
+  // 4. 模拟下单（当前售罄，预期返回"资源包类型错误"）
+  process.stdout.write(chalk.white("4. 模拟下单（预期失败）... "));
+  try {
+    const order = await client.createPreOrder(targetProductId, targetPayPrice);
+    if (order.success) {
+      console.log(chalk.green("✓ 意外成功！下单通过了！"));
+      console.log(chalk.white(`   订单号: ${order.data?.bizId}`));
+    } else {
+      console.log(chalk.green(`✓ 通过 (预期失败: ${order.msg})`));
+    }
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    console.log(chalk.red(`✗ 异常: ${message}`));
+    process.exit(1);
+  }
+
+  console.log(chalk.bold.green("\n✅ 全链路测试通过！所有模块正常工作。\n"));
+}
+
+test().catch((err) => {
+  console.error(chalk.red(`\n✗ 测试异常: ${err.message}`));
+  process.exit(1);
+});
+```
+
+在 `package.json` scripts 中添加测试命令：
+
+```json
+"test:e2e": "npx tsx src/test-e2e.ts"
+```
+
+- [ ] **Step 6: 运行全链路测试**
+
+Run: `cd /Users/shenxiaomin/Documents/github/zhipu-codeplan-sniper && npm run test:e2e`
+
+预期输出：
+```
+🧪 全链路测试
+
+1. 提取 Chrome Cookie... ✓ 通过
+2. 验证 Token... ✓ 通过 (我是沈满意爸爸)
+3. 查询产品库存... ✓ 通过 (共 9 个产品, Pro 季付 售罄, ID: product-fef82f)
+4. 模拟下单（预期失败）... ✓ 通过 (预期失败: 资源包类型错误)
+
+✅ 全链路测试通过！所有模块正常工作。
+```
+
+- [ ] **Step 7: 提交**
 
 ```bash
 git add -A
-git commit -m "chore: 修复构建配置"
+git commit -m "chore: 修复构建配置 + 添加全链路测试"
 ```
 
 ---
 
-### Task 8: 推送并发布
+### Task 8: README + 推送 GitHub
 
 **Files:**
+- Create: `README.md`
 - 修改: `package.json`（添加 repository 字段）
 
-- [ ] **Step 1: 添加 repository 字段到 package.json**
+- [ ] **Step 1: 编写 README.md**
+
+```md
+# zhipu-codeplan-sniper
+
+智谱 GLM Coding Plan 抢购工具。自动从 Chrome 提取 Cookie，轮询库存，检测到有货立即下单，打开支付页等待扫码。
+
+## 安装
+
+```bash
+npx zhipu-codeplan-sniper
+```
+
+## 使用
+
+```bash
+npx zhipu-codeplan-sniper
+```
+
+启动后交互确认套餐和轮询间隔，回车即开始抢购：
+
+```
+? 目标套餐 [Pro/Max/Lite] › Pro
+? 轮询间隔 ms [100-500] › 200
+? 开始抢购? (Y/n) › Y
+
+✓ Cookie 从 Chrome 提取成功
+✓ Token 验证通过 (ilfir364)
+✓ 目标: Pro 季付 ¥402.3
+
+🚀 抢购中... (0.2s/次, 已请求 15 次)
+```
+
+Ctrl+C 停止。
+
+## 要求
+
+- macOS + Chrome
+- Node.js >= 18
+- 已在 Chrome 中登录 [open.bigmodel.cn](https://open.bigmodel.cn)
+
+## 套餐
+
+| 套餐 | 月原价 | 季付实付 | 折扣 |
+|------|--------|----------|------|
+| Lite | ¥49/月 | ¥132.3/季 | 连续包季 9 折 |
+| Pro  | ¥149/月 | ¥402.3/季 | 连续包季 9 折 |
+| Max  | ¥469/月 | ¥1266.3/季 | 连续包季 9 折 |
+
+## 开发
+
+```bash
+npm install
+npm run build
+npm run test:e2e   # 全链路测试
+npm start           # 运行
+```
+
+## License
+
+MIT
+```
+
+- [ ] **Step 2: 添加 repository 字段到 package.json**
 
 在 `package.json` 中添加：
 
@@ -834,15 +1017,15 @@ git commit -m "chore: 修复构建配置"
 }
 ```
 
-- [ ] **Step 2: 提交并推送**
+- [ ] **Step 3: 提交并推送到 GitHub**
 
 ```bash
 git add -A
-git commit -m "chore: 添加 repository 字段"
+git commit -m "docs: 添加 README + repository 字段"
 git push origin main
 ```
 
-- [ ] **Step 3: 发布到 npm（可选）**
+- [ ] **Step 4: 发布到 npm（可选）**
 
 Run: `npm publish`
 
