@@ -25,6 +25,10 @@
     "keytar": "^7.9.0",
     "ora": "^8.0.1"
   },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/freedom-shen/zhipu-codeplan-sniper.git"
+  },
   "devDependencies": {
     "@types/node": "^20.0.0",
     "tsup": "^8.0.0",
