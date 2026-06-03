@@ -1,0 +1,31 @@
+{
+  "name": "zhipu-codeplan-sniper",
+  "version": "1.0.0",
+  "description": "智谱 GLM Coding Plan 抢购工具",
+  "type": "module",
+  "bin": {
+    "zhipu-sniper": "./dist/index.js"
+  },
+  "files": ["dist"],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "build": "tsup",
+    "dev": "tsup --watch",
+    "start": "node dist/index.js",
+    "test:e2e": "npx tsx src/test-e2e.ts"
+  },
+  "dependencies": {
+    "@clack/prompts": "^0.9.1",
+    "chalk": "^5.3.0",
+    "chrome-cookies-secure": "^3.0.2",
+    "ora": "^8.0.1"
+  },
+  "devDependencies": {
+    "tsup": "^8.0.0",
+    "typescript": "^5.5.0",
+    "@types/node": "^20.0.0",
+    "tsx": "^4.0.0"
+  }
+}
