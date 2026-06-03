@@ -1,5 +1,7 @@
 # zhipu-codeplan-sniper Design Spec
 
+- **Repo**: https://github.com/freedom-shen/zhipu-codeplan-sniper
+
 ## Summary
 
 CLI tool to snipe GLM Coding Plan subscriptions on bigmodel.cn. Single command, auto-extract Chrome cookie, poll inventory, auto-order, open payment page. Mac + Chrome only.
