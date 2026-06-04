@@ -63,7 +63,7 @@ export class Sniper {
         if (!target) {
           const elapsed = Date.now() - start;
           this.logStatus(elapsed, "无目标产品");
-          this.resetBackoff();
+          this.decayBackoff();
           await this.wait();
           continue;
         }
@@ -71,7 +71,7 @@ export class Sniper {
         if (target.soldOut) {
           const elapsed = Date.now() - start;
           this.logStatus(elapsed, "售罄中...");
-          this.resetBackoff();
+          this.decayBackoff();
           await this.wait();
           continue;
         }
@@ -158,7 +158,7 @@ export class Sniper {
     );
     console.log(chalk.white(`   请在浏览器中扫码支付`));
 
-    exec("open https://open.bigmodel.cn/console/overview");
+    exec("open https://bigmodel.cn/console/overview");
     exec(
       `osascript -e 'display notification "订单号 ${bizId}，请扫码支付" with title "抢购成功！"'`
     );
@@ -174,6 +174,9 @@ export class Sniper {
         )
       );
     } else {
+      // 非限流错误也触发退避，但幅度小
+      this.backoff.active = true;
+      this.backoff.current = Math.max(this.backoff.current, 1000);
       console.log(
         chalk.yellow(
           `   请求 #${this.requestCount}: API 错误 ${code} - ${msg}`
@@ -195,6 +198,18 @@ export class Sniper {
   private resetBackoff(): void {
     this.backoff.current = DEFAULTS.backoffInitial;
     this.backoff.active = false;
+  }
+
+  private decayBackoff(): void {
+    // 逐步恢复：每次成功请求将退避时间减半
+    if (!this.backoff.active) return;
+    this.backoff.current = Math.max(
+      Math.floor(this.backoff.current / 2),
+      this.options.intervalMax
+    );
+    if (this.backoff.current <= this.options.intervalMax) {
+      this.backoff.active = false;
+    }
   }
 
   private async wait(): Promise<void> {

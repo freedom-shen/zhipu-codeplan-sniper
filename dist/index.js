@@ -8,13 +8,13 @@ import chalk2 from "chalk";
 import chromeCookies from "chrome-cookies-secure";
 async function extractToken() {
   const cookies = await chromeCookies.getCookiesPromised(
-    "https://open.bigmodel.cn",
+    "https://bigmodel.cn",
     "object"
   );
   const token = cookies["bigmodel_token_production"];
   if (!token) {
     throw new Error(
-      "\u672A\u627E\u5230 bigmodel_token_production cookie\uFF0C\u8BF7\u5148\u5728 Chrome \u4E2D\u767B\u5F55 open.bigmodel.cn"
+      "\u672A\u627E\u5230 bigmodel_token_production cookie\uFF0C\u8BF7\u5148\u5728 Chrome \u4E2D\u767B\u5F55 bigmodel.cn"
     );
   }
   return token;
@@ -28,14 +28,14 @@ var PLANS = {
 };
 var DEFAULTS = {
   plan: "pro",
-  intervalMin: 100,
-  intervalMax: 500,
+  intervalMin: 150,
+  intervalMax: 350,
   intervalDefault: 200,
   requestTimeout: 5e3,
-  backoffMax: 2e3,
-  backoffInitial: 500
+  backoffMax: 8e3,
+  backoffInitial: 2e3
 };
-var API_BASE = "https://open.bigmodel.cn";
+var API_BASE = "https://bigmodel.cn";
 var HEADERS = {
   "Content-Type": "application/json",
   "bigmodel-organization": "org-926bfC72DC024473Bc02ECc731A83cf2",
@@ -150,14 +150,14 @@ var Sniper = class {
         if (!target) {
           const elapsed2 = Date.now() - start;
           this.logStatus(elapsed2, "\u65E0\u76EE\u6807\u4EA7\u54C1");
-          this.resetBackoff();
+          this.decayBackoff();
           await this.wait();
           continue;
         }
         if (target.soldOut) {
           const elapsed2 = Date.now() - start;
           this.logStatus(elapsed2, "\u552E\u7F44\u4E2D...");
-          this.resetBackoff();
+          this.decayBackoff();
           await this.wait();
           continue;
         }
@@ -223,7 +223,7 @@ var Sniper = class {
       )
     );
     console.log(chalk.white(`   \u8BF7\u5728\u6D4F\u89C8\u5668\u4E2D\u626B\u7801\u652F\u4ED8`));
-    exec("open https://open.bigmodel.cn/console/overview");
+    exec("open https://bigmodel.cn/console/overview");
     exec(
       `osascript -e 'display notification "\u8BA2\u5355\u53F7 ${bizId}\uFF0C\u8BF7\u626B\u7801\u652F\u4ED8" with title "\u62A2\u8D2D\u6210\u529F\uFF01"'`
     );
@@ -238,6 +238,8 @@ var Sniper = class {
         )
       );
     } else {
+      this.backoff.active = true;
+      this.backoff.current = Math.max(this.backoff.current, 1e3);
       console.log(
         chalk.yellow(
           `   \u8BF7\u6C42 #${this.requestCount}: API \u9519\u8BEF ${code} - ${msg}`
@@ -256,6 +258,16 @@ var Sniper = class {
   resetBackoff() {
     this.backoff.current = DEFAULTS.backoffInitial;
     this.backoff.active = false;
+  }
+  decayBackoff() {
+    if (!this.backoff.active) return;
+    this.backoff.current = Math.max(
+      Math.floor(this.backoff.current / 2),
+      this.options.intervalMax
+    );
+    if (this.backoff.current <= this.options.intervalMax) {
+      this.backoff.active = false;
+    }
   }
   async wait() {
     if (this.backoff.active) {
@@ -345,8 +357,8 @@ async function main() {
       defaultValue: String(DEFAULTS.intervalDefault),
       validate: (v) => {
         const n = Number(v);
-        if (isNaN(n) || n < 100 || n > 500)
-          return "\u8BF7\u8F93\u5165 100-500 \u4E4B\u95F4\u7684\u6570\u503C";
+        if (isNaN(n) || n < 100 || n > 1e3)
+          return "\u8BF7\u8F93\u5165 100-1000 \u4E4B\u95F4\u7684\u6570\u503C";
       }
     }),
     confirm: () => p.confirm({
@@ -362,7 +374,7 @@ async function main() {
   const sniper = new Sniper(client, {
     plan: answers.plan,
     intervalMin: Math.max(100, interval - 100),
-    intervalMax: Math.min(500, interval + 100)
+    intervalMax: Math.min(1e3, interval + 150)
   });
   process.on("SIGINT", () => {
     console.log(chalk2.gray("\n\n\u5DF2\u505C\u6B62\u62A2\u8D2D"));

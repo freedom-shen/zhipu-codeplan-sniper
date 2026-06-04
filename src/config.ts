@@ -14,15 +14,15 @@ export const PLANS: Record<PlanLevel, PlanConfig> = {
 
 export const DEFAULTS = {
   plan: "pro" as PlanLevel,
-  intervalMin: 100,
-  intervalMax: 500,
+  intervalMin: 150,
+  intervalMax: 350,
   intervalDefault: 200,
   requestTimeout: 5000,
-  backoffMax: 2000,
-  backoffInitial: 500,
+  backoffMax: 8000,
+  backoffInitial: 2000,
 } as const;
 
-export const API_BASE = "https://open.bigmodel.cn";
+export const API_BASE = "https://bigmodel.cn";
 
 export const HEADERS = {
   "Content-Type": "application/json",

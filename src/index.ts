@@ -88,8 +88,8 @@ async function main() {
         defaultValue: String(DEFAULTS.intervalDefault),
         validate: (v) => {
           const n = Number(v);
-          if (isNaN(n) || n < 100 || n > 500)
-            return "请输入 100-500 之间的数值";
+          if (isNaN(n) || n < 100 || n > 1000)
+            return "请输入 100-1000 之间的数值";
         },
       }),
     confirm: () =>
@@ -110,7 +110,7 @@ async function main() {
   const sniper = new Sniper(client, {
     plan: answers.plan,
     intervalMin: Math.max(100, interval - 100),
-    intervalMax: Math.min(500, interval + 100),
+    intervalMax: Math.min(1000, interval + 150),
   });
 
   process.on("SIGINT", () => {
