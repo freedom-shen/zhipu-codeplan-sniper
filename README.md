@@ -30,11 +30,17 @@ npx zhipu-codeplan-sniper
 
 Ctrl+C 停止。
 
-## 要求
+## 系统和环境要求
 
-- macOS + Chrome
-- Node.js >= 18
-- 已在 Chrome 中登录 [open.bigmodel.cn](https://open.bigmodel.cn)
+| 项目 | 要求 |
+|------|------|
+| 操作系统 | macOS（依赖 macOS 钥匙串解密 Chrome Cookie） |
+| 浏览器 | Google Chrome（需已登录 [open.bigmodel.cn](https://open.bigmodel.cn)） |
+| Node.js | >= 18（使用原生 fetch） |
+| npm | >= 7（npx 支持） |
+| 钥匙串权限 | 首次运行时 macOS 会弹出钥匙串授权，需点击"允许" |
+
+> 注意：首次运行时 Chrome 需处于关闭或至少已登录 open.bigmodel.cn 状态。终端需要钥匙串访问权限来解密 Cookie。
 
 ## 套餐
 
