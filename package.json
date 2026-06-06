@@ -1,6 +1,6 @@
 {
   "name": "zhipu-codeplan-sniper",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "description": "智谱 GLM Coding Plan 抢购工具",
   "type": "module",
   "bin": {
@@ -16,7 +16,8 @@
     "build": "tsup",
     "dev": "tsup --watch",
     "start": "node dist/index.js",
-    "test:e2e": "npx tsx src/test-e2e.ts"
+    "test:e2e": "npx tsx src/test-e2e.ts",
+    "test:unit": "npx tsx src/test-unit.ts"
   },
   "dependencies": {
     "@clack/prompts": "^0.9.1",

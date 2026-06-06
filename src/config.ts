@@ -22,6 +22,38 @@ export const DEFAULTS = {
   backoffInitial: 2000,
 } as const;
 
+export const SNIPE = {
+  /** 冲刺期下单间隔 */
+  burstIntervalMs: 200,
+  /** 提前起跑量（覆盖时钟误差 + 抢首发） */
+  leadTimeMs: 2000,
+  /** 冲刺持续时长，超时回落轮询模式 */
+  burstDurationMs: 30_000,
+  /** 等待期保活刷新间隔 */
+  keepAliveMs: 60_000,
+  /** 冲刺期遇限流的固定退避 */
+  limitBackoffMs: 1000,
+  /** 开抢前多久做最后一次校时+缓存刷新 */
+  finalSyncAheadMs: 5000,
+  /** 默认开抢时间 */
+  defaultTime: "10:00",
+} as const;
+
+/**
+ * 解析 "HH:MM" 为下一次该时刻的 Date。
+ * 今天已过（或正好等于当前时刻）则顺延到明天；非法输入返回 null。
+ */
+export function parseTargetTime(input: string, now: Date): Date | null {
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(input.trim());
+  if (!m) return null;
+  const target = new Date(now);
+  target.setHours(Number(m[1]), Number(m[2]), 0, 0);
+  if (target.getTime() <= now.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+  return target;
+}
+
 export const API_BASE = "https://bigmodel.cn";
 
 export const HEADERS = {

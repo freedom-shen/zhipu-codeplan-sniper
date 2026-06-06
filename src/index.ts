@@ -3,7 +3,14 @@ import chalk from "chalk";
 import { extractToken } from "./cookie.js";
 import { ApiClient } from "./api.js";
 import { Sniper } from "./sniper.js";
-import { DEFAULTS, PLANS, type PlanLevel, isQuarterlyDiscount } from "./config.js";
+import {
+  DEFAULTS,
+  SNIPE,
+  PLANS,
+  type PlanLevel,
+  isQuarterlyDiscount,
+  parseTargetTime,
+} from "./config.js";
 
 async function main() {
   console.log(chalk.bold.cyan("\n⚡ 智谱 GLM Coding Plan 抢购工具\n"));
@@ -81,9 +88,21 @@ async function main() {
           },
         ],
       }),
+    time: () =>
+      p.text({
+        message: "开抢时间 (HH:MM，输入 now 立即开始轮询)",
+        placeholder: SNIPE.defaultTime,
+        defaultValue: SNIPE.defaultTime,
+        validate: (v) => {
+          const s = (v || SNIPE.defaultTime).trim();
+          if (s === "now") return;
+          if (!parseTargetTime(s, new Date()))
+            return "请输入 HH:MM 格式（如 10:00）或 now";
+        },
+      }),
     interval: () =>
       p.text({
-        message: "轮询间隔 (ms)",
+        message: "轮询间隔 (ms，兜底/轮询模式使用)",
         placeholder: String(DEFAULTS.intervalDefault),
         defaultValue: String(DEFAULTS.intervalDefault),
         validate: (v) => {
@@ -109,7 +128,8 @@ async function main() {
   // 5. 启动抢购
   const sniper = new Sniper(client, {
     plan: answers.plan,
-    intervalMin: Math.max(100, interval - 100),
+    // 尊重用户输入：以 interval 为下限，避免实际频率比输入更激进而触发限流
+    intervalMin: Math.max(100, interval),
     intervalMax: Math.min(1000, interval + 150),
   });
 
@@ -119,7 +139,18 @@ async function main() {
     process.exit(0);
   });
 
-  await sniper.run();
+  const timeInput = String(answers.time || SNIPE.defaultTime).trim();
+  if (timeInput === "now") {
+    await sniper.run();
+    return;
+  }
+
+  const now = new Date();
+  const target = parseTargetTime(timeInput, now)!;
+  if (target.getDate() !== now.getDate()) {
+    console.log(chalk.yellow(`   今天 ${timeInput} 已过，顺延至明天`));
+  }
+  await sniper.snipe(target);
 }
 
 main().catch((err) => {

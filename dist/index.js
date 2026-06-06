@@ -35,6 +35,32 @@ var DEFAULTS = {
   backoffMax: 8e3,
   backoffInitial: 2e3
 };
+var SNIPE = {
+  /** 冲刺期下单间隔 */
+  burstIntervalMs: 200,
+  /** 提前起跑量（覆盖时钟误差 + 抢首发） */
+  leadTimeMs: 2e3,
+  /** 冲刺持续时长，超时回落轮询模式 */
+  burstDurationMs: 3e4,
+  /** 等待期保活刷新间隔 */
+  keepAliveMs: 6e4,
+  /** 冲刺期遇限流的固定退避 */
+  limitBackoffMs: 1e3,
+  /** 开抢前多久做最后一次校时+缓存刷新 */
+  finalSyncAheadMs: 5e3,
+  /** 默认开抢时间 */
+  defaultTime: "10:00"
+};
+function parseTargetTime(input, now) {
+  const m = /^([01]?\d|2[0-3]):([0-5]\d)$/.exec(input.trim());
+  if (!m) return null;
+  const target = new Date(now);
+  target.setHours(Number(m[1]), Number(m[2]), 0, 0);
+  if (target.getTime() <= now.getTime()) {
+    target.setDate(target.getDate() + 1);
+  }
+  return target;
+}
 var API_BASE = "https://bigmodel.cn";
 var HEADERS = {
   "Content-Type": "application/json",
@@ -86,7 +112,10 @@ var ApiClient = class {
     if (res.status === 401 || res.status === 403) {
       throw new Error("Token \u5DF2\u8FC7\u671F\uFF0C\u8BF7\u91CD\u65B0\u767B\u5F55 Chrome");
     }
-    return res.json();
+    const body = await res.json();
+    const dateHeader = res.headers.get("date");
+    body.serverDate = dateHeader ? new Date(dateHeader) : null;
+    return body;
   }
   async createPreOrder(productId, payPrice) {
     const res = await fetch(`${API_BASE}/api/biz/product/createPreOrder`, {
@@ -204,6 +233,163 @@ var Sniper = class {
   stop() {
     this.running = false;
   }
+  /**
+   * 定时狙击：提前缓存 productId，到点直接打 createPreOrder，跳过 batch-preview。
+   * 等待期 → 校时 → 冲刺期 → 超时回落轮询模式。
+   */
+  async snipe(target) {
+    this.running = true;
+    const planConfig = PLANS[this.options.plan];
+    const clock = `${String(target.getMonth() + 1).padStart(2, "0")}-${String(
+      target.getDate()
+    ).padStart(2, "0")} ${String(target.getHours()).padStart(2, "0")}:${String(
+      target.getMinutes()
+    ).padStart(2, "0")}`;
+    console.log(
+      chalk.cyan(`
+\u{1F3AF} \u5B9A\u65F6\u72D9\u51FB ${planConfig.label} \u5B63\u4ED8 | \u5F00\u62A2 ${clock} | Ctrl+C \u505C\u6B62`)
+    );
+    let cached = null;
+    let clockOffset = 0;
+    const serverNow = () => Date.now() + clockOffset;
+    const refresh = async () => {
+      const result = await this.client.batchPreview();
+      if (result.serverDate && !isNaN(result.serverDate.getTime())) {
+        clockOffset = result.serverDate.getTime() - Date.now();
+      }
+      if (result.success) {
+        return this.findTargetProduct(
+          result.data.productList,
+          this.options.plan
+        );
+      }
+      return null;
+    };
+    try {
+      cached = await refresh() ?? cached;
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("Token \u5DF2\u8FC7\u671F")) {
+        console.log(chalk.red(`\u2717 ${message}`));
+        return;
+      }
+      console.log(chalk.yellow(`   \u521D\u59CB\u4EA7\u54C1\u83B7\u53D6\u5931\u8D25: ${message}\uFF0C\u7B49\u5F85\u671F\u4F1A\u91CD\u8BD5`));
+    }
+    if (cached) {
+      console.log(
+        chalk.gray(`   \u5DF2\u7F13\u5B58: \xA5${cached.payAmount} (productId: ${cached.productId})`)
+      );
+    }
+    console.log(
+      chalk.gray(
+        `   \u65F6\u949F\u504F\u79FB: ${clockOffset >= 0 ? "+" : ""}${clockOffset}ms (\u670D\u52A1\u5668-\u672C\u5730)
+`
+      )
+    );
+    let lastRefresh = Date.now();
+    let finalSyncDone = false;
+    while (this.running) {
+      const remain = target.getTime() - serverNow();
+      if (remain <= SNIPE.leadTimeMs) break;
+      if (cached && !cached.soldOut) {
+        process.stdout.write("\n");
+        console.log(chalk.green.bold("   \u63D0\u524D\u53D1\u73B0\u6709\u5E93\u5B58\uFF01\u7ACB\u5373\u5F00\u62A2"));
+        break;
+      }
+      const finalSyncWindow = SNIPE.finalSyncAheadMs + SNIPE.leadTimeMs;
+      const needFinalSync = !finalSyncDone && remain <= finalSyncWindow;
+      const needKeepAlive = Date.now() - lastRefresh >= SNIPE.keepAliveMs && remain > finalSyncWindow + 2e3;
+      const needRetry = !cached && Date.now() - lastRefresh >= 5e3;
+      if (needFinalSync || needKeepAlive || needRetry) {
+        try {
+          cached = await refresh() ?? cached;
+          lastRefresh = Date.now();
+          if (needFinalSync) finalSyncDone = true;
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes("Token \u5DF2\u8FC7\u671F")) {
+            process.stdout.write("\n");
+            console.log(chalk.red(`\u2717 ${message}`));
+            this.running = false;
+            return;
+          }
+        }
+      }
+      const status = cached ? `\xA5${cached.payAmount} (${cached.soldOut ? "\u552E\u7F44\u4E2D" : "\u6709\u8D27"})` : "\u672A\u53D6\u5230\u4EA7\u54C1\uFF0C\u91CD\u8BD5\u4E2D";
+      process.stdout.write(
+        `\r   ${chalk.gray(
+          `\u8DDD\u5F00\u62A2 ${this.formatRemain(remain)} | \u7F13\u5B58: ${planConfig.label} \u5B63\u4ED8 ${status}`
+        )}  `
+      );
+      await this.sleep(Math.min(1e3, Math.max(50, remain - SNIPE.leadTimeMs)));
+    }
+    if (!this.running) return;
+    process.stdout.write("\n");
+    if (!cached) {
+      console.log(chalk.yellow("   \u65E0\u7F13\u5B58\u4EA7\u54C1\uFF0C\u76F4\u63A5\u56DE\u843D\u8F6E\u8BE2\u6A21\u5F0F"));
+      await this.run();
+      return;
+    }
+    console.log(
+      chalk.cyan.bold(`
+\u26A1 \u51B2\u523A\u5F00\u59CB\uFF01\u6BCF ${SNIPE.burstIntervalMs}ms \u4E00\u53D1\uFF0C\u76F4\u63A5\u4E0B\u5355
+`)
+    );
+    const burstEnd = target.getTime() + SNIPE.burstDurationMs;
+    while (this.running && serverNow() < burstEnd) {
+      this.requestCount++;
+      const start = Date.now();
+      try {
+        const order = await this.client.createPreOrder(
+          cached.productId,
+          cached.payAmount
+        );
+        const elapsed = Date.now() - start;
+        if (order.success && order.data?.bizId) {
+          await this.onSuccess(cached, order.data.bizId);
+          this.running = false;
+          return;
+        }
+        if (order.code === 429 || order.code === 555) {
+          this.logStatus(elapsed, `\u9650\u6D41\uFF0C\u9000\u907F ${SNIPE.limitBackoffMs}ms`);
+          await this.sleep(SNIPE.limitBackoffMs);
+          continue;
+        }
+        const msg = order.msg || "\u672A\u77E5\u9519\u8BEF";
+        if (msg.includes("\u8D44\u6E90\u5305\u7C7B\u578B\u9519\u8BEF")) {
+          this.logStatus(elapsed, "\u7A7A\u67AA\uFF08\u672A\u653E\u8D27\uFF09");
+        } else {
+          this.logStatus(elapsed, `\u4E0B\u5355\u5931\u8D25: ${msg}`);
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("Token \u5DF2\u8FC7\u671F")) {
+          console.log(chalk.red(`
+\u2717 ${message}`));
+          this.running = false;
+          return;
+        }
+        const label = message.includes("AbortError") || message.includes("timeout") ? "\u8D85\u65F6" : message;
+        this.logStatus(Date.now() - start, label);
+      }
+      await this.sleep(SNIPE.burstIntervalMs);
+    }
+    if (!this.running) return;
+    console.log(
+      chalk.yellow(
+        `
+   \u51B2\u523A ${SNIPE.burstDurationMs / 1e3}s \u672A\u6210\u529F\uFF0C\u56DE\u843D\u8F6E\u8BE2\u6A21\u5F0F`
+      )
+    );
+    await this.run();
+  }
+  formatRemain(ms) {
+    const s = Math.max(0, Math.floor(ms / 1e3));
+    const h = String(Math.floor(s / 3600)).padStart(2, "0");
+    const m = String(Math.floor(s % 3600 / 60)).padStart(2, "0");
+    const sec = String(s % 60).padStart(2, "0");
+    return `${h}:${m}:${sec}`;
+  }
   findTargetProduct(products, plan) {
     const planConfig = PLANS[plan];
     return products.find(
@@ -231,6 +417,12 @@ var Sniper = class {
   }
   handleApiError(code, msg) {
     if (code === 555 || code === 429) {
+      if (this.backoff.active) {
+        this.backoff.current = Math.min(
+          this.backoff.current * 2,
+          DEFAULTS.backoffMax
+        );
+      }
       this.activateBackoff();
       console.log(
         chalk.yellow(
@@ -255,10 +447,6 @@ var Sniper = class {
   activateBackoff() {
     this.backoff.active = true;
   }
-  resetBackoff() {
-    this.backoff.current = DEFAULTS.backoffInitial;
-    this.backoff.active = false;
-  }
   decayBackoff() {
     if (!this.backoff.active) return;
     this.backoff.current = Math.max(
@@ -272,10 +460,6 @@ var Sniper = class {
   async wait() {
     if (this.backoff.active) {
       await this.sleep(this.backoff.current);
-      this.backoff.current = Math.min(
-        this.backoff.current * 2,
-        DEFAULTS.backoffMax
-      );
       return;
     }
     const { intervalMin, intervalMax } = this.options;
@@ -319,11 +503,11 @@ async function main() {
     const preview = await client.batchPreview();
     if (preview.success) {
       const products = preview.data.productList;
-      const target = products.find(
+      const target2 = products.find(
         (pr) => pr.monthlyOriginalAmount === PLANS[DEFAULTS.plan].monthlyOriginalAmount && isQuarterlyDiscount(pr.campaignDiscountDetails)
       );
-      if (target) {
-        targetLabel = `\xA5${target.payAmount}`;
+      if (target2) {
+        targetLabel = `\xA5${target2.payAmount}`;
       }
     }
     s.stop("\u4EA7\u54C1\u4FE1\u606F\u83B7\u53D6\u5B8C\u6210");
@@ -351,8 +535,19 @@ async function main() {
         }
       ]
     }),
+    time: () => p.text({
+      message: "\u5F00\u62A2\u65F6\u95F4 (HH:MM\uFF0C\u8F93\u5165 now \u7ACB\u5373\u5F00\u59CB\u8F6E\u8BE2)",
+      placeholder: SNIPE.defaultTime,
+      defaultValue: SNIPE.defaultTime,
+      validate: (v) => {
+        const s2 = (v || SNIPE.defaultTime).trim();
+        if (s2 === "now") return;
+        if (!parseTargetTime(s2, /* @__PURE__ */ new Date()))
+          return "\u8BF7\u8F93\u5165 HH:MM \u683C\u5F0F\uFF08\u5982 10:00\uFF09\u6216 now";
+      }
+    }),
     interval: () => p.text({
-      message: "\u8F6E\u8BE2\u95F4\u9694 (ms)",
+      message: "\u8F6E\u8BE2\u95F4\u9694 (ms\uFF0C\u515C\u5E95/\u8F6E\u8BE2\u6A21\u5F0F\u4F7F\u7528)",
       placeholder: String(DEFAULTS.intervalDefault),
       defaultValue: String(DEFAULTS.intervalDefault),
       validate: (v) => {
@@ -373,7 +568,8 @@ async function main() {
   const interval = Number(answers.interval) || DEFAULTS.intervalDefault;
   const sniper = new Sniper(client, {
     plan: answers.plan,
-    intervalMin: Math.max(100, interval - 100),
+    // 尊重用户输入：以 interval 为下限，避免实际频率比输入更激进而触发限流
+    intervalMin: Math.max(100, interval),
     intervalMax: Math.min(1e3, interval + 150)
   });
   process.on("SIGINT", () => {
@@ -381,7 +577,17 @@ async function main() {
     sniper.stop();
     process.exit(0);
   });
-  await sniper.run();
+  const timeInput = String(answers.time || SNIPE.defaultTime).trim();
+  if (timeInput === "now") {
+    await sniper.run();
+    return;
+  }
+  const now = /* @__PURE__ */ new Date();
+  const target = parseTargetTime(timeInput, now);
+  if (target.getDate() !== now.getDate()) {
+    console.log(chalk2.yellow(`   \u4ECA\u5929 ${timeInput} \u5DF2\u8FC7\uFF0C\u987A\u5EF6\u81F3\u660E\u5929`));
+  }
+  await sniper.snipe(target);
 }
 main().catch((err) => {
   console.error(chalk2.red(`

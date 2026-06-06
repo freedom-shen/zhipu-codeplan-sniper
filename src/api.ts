@@ -32,6 +32,8 @@ export interface BatchPreviewResult {
     productList: Product[];
     isSubscribed: boolean;
   };
+  /** 响应 Date 头解析出的服务器时间（秒级精度），用于校时 */
+  serverDate: Date | null;
 }
 
 export interface CreatePreOrderResult {
@@ -91,7 +93,10 @@ export class ApiClient {
       throw new Error("Token 已过期，请重新登录 Chrome");
     }
 
-    return res.json();
+    const body = await res.json();
+    const dateHeader = res.headers.get("date");
+    body.serverDate = dateHeader ? new Date(dateHeader) : null;
+    return body;
   }
 
   async createPreOrder(

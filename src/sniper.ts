@@ -5,6 +5,7 @@ import {
   type PlanLevel,
   PLANS,
   DEFAULTS,
+  SNIPE,
   isQuarterlyDiscount,
 } from "./config.js";
 
@@ -122,6 +123,191 @@ export class Sniper {
     this.running = false;
   }
 
+  /**
+   * 定时狙击：提前缓存 productId，到点直接打 createPreOrder，跳过 batch-preview。
+   * 等待期 → 校时 → 冲刺期 → 超时回落轮询模式。
+   */
+  async snipe(target: Date): Promise<void> {
+    this.running = true;
+    const planConfig = PLANS[this.options.plan];
+    const clock = `${String(target.getMonth() + 1).padStart(2, "0")}-${String(
+      target.getDate()
+    ).padStart(2, "0")} ${String(target.getHours()).padStart(2, "0")}:${String(
+      target.getMinutes()
+    ).padStart(2, "0")}`;
+    console.log(
+      chalk.cyan(`\n🎯 定时狙击 ${planConfig.label} 季付 | 开抢 ${clock} | Ctrl+C 停止`)
+    );
+
+    let cached: Product | null = null;
+    let clockOffset = 0; // 服务器时间 - 本地时间 (ms)
+    const serverNow = () => Date.now() + clockOffset;
+
+    const refresh = async (): Promise<Product | null> => {
+      const result = await this.client.batchPreview();
+      if (result.serverDate && !isNaN(result.serverDate.getTime())) {
+        clockOffset = result.serverDate.getTime() - Date.now();
+      }
+      if (result.success) {
+        return this.findTargetProduct(
+          result.data.productList,
+          this.options.plan
+        );
+      }
+      return null;
+    };
+
+    // 初始缓存
+    try {
+      cached = (await refresh()) ?? cached;
+    } catch (err: unknown) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (message.includes("Token 已过期")) {
+        console.log(chalk.red(`✗ ${message}`));
+        return;
+      }
+      console.log(chalk.yellow(`   初始产品获取失败: ${message}，等待期会重试`));
+    }
+
+    if (cached) {
+      console.log(
+        chalk.gray(`   已缓存: ¥${cached.payAmount} (productId: ${cached.productId})`)
+      );
+    }
+    console.log(
+      chalk.gray(
+        `   时钟偏移: ${clockOffset >= 0 ? "+" : ""}${clockOffset}ms (服务器-本地)\n`
+      )
+    );
+
+    // ── 等待期：倒计时 + 低频保活刷新 ──
+    let lastRefresh = Date.now();
+    let finalSyncDone = false;
+
+    while (this.running) {
+      const remain = target.getTime() - serverNow();
+      if (remain <= SNIPE.leadTimeMs) break;
+
+      // 捡漏：等待期就发现有货，立即进冲刺
+      if (cached && !cached.soldOut) {
+        process.stdout.write("\n");
+        console.log(chalk.green.bold("   提前发现有库存！立即开抢"));
+        break;
+      }
+
+      const finalSyncWindow = SNIPE.finalSyncAheadMs + SNIPE.leadTimeMs;
+      const needFinalSync = !finalSyncDone && remain <= finalSyncWindow;
+      const needKeepAlive =
+        Date.now() - lastRefresh >= SNIPE.keepAliveMs &&
+        remain > finalSyncWindow + 2000;
+      const needRetry = !cached && Date.now() - lastRefresh >= 5000;
+
+      if (needFinalSync || needKeepAlive || needRetry) {
+        try {
+          cached = (await refresh()) ?? cached;
+          lastRefresh = Date.now();
+          if (needFinalSync) finalSyncDone = true;
+        } catch (err: unknown) {
+          const message = err instanceof Error ? err.message : String(err);
+          if (message.includes("Token 已过期")) {
+            process.stdout.write("\n");
+            console.log(chalk.red(`✗ ${message}`));
+            this.running = false;
+            return;
+          }
+          // 网络抖动等，下一轮再试
+        }
+      }
+
+      const status = cached
+        ? `¥${cached.payAmount} (${cached.soldOut ? "售罄中" : "有货"})`
+        : "未取到产品，重试中";
+      process.stdout.write(
+        `\r   ${chalk.gray(
+          `距开抢 ${this.formatRemain(remain)} | 缓存: ${planConfig.label} 季付 ${status}`
+        )}  `
+      );
+      await this.sleep(Math.min(1000, Math.max(50, remain - SNIPE.leadTimeMs)));
+    }
+
+    if (!this.running) return;
+    process.stdout.write("\n");
+
+    // ── 冲刺期：跳过 batch-preview，直接连发下单 ──
+    if (!cached) {
+      console.log(chalk.yellow("   无缓存产品，直接回落轮询模式"));
+      await this.run();
+      return;
+    }
+
+    console.log(
+      chalk.cyan.bold(`\n⚡ 冲刺开始！每 ${SNIPE.burstIntervalMs}ms 一发，直接下单\n`)
+    );
+    const burstEnd = target.getTime() + SNIPE.burstDurationMs;
+
+    while (this.running && serverNow() < burstEnd) {
+      this.requestCount++;
+      const start = Date.now();
+      try {
+        const order = await this.client.createPreOrder(
+          cached.productId,
+          cached.payAmount
+        );
+        const elapsed = Date.now() - start;
+
+        if (order.success && order.data?.bizId) {
+          await this.onSuccess(cached, order.data.bizId);
+          this.running = false;
+          return;
+        }
+
+        if (order.code === 429 || order.code === 555) {
+          this.logStatus(elapsed, `限流，退避 ${SNIPE.limitBackoffMs}ms`);
+          await this.sleep(SNIPE.limitBackoffMs);
+          continue;
+        }
+
+        const msg = order.msg || "未知错误";
+        if (msg.includes("资源包类型错误")) {
+          this.logStatus(elapsed, "空枪（未放货）");
+        } else {
+          this.logStatus(elapsed, `下单失败: ${msg}`);
+        }
+      } catch (err: unknown) {
+        const message = err instanceof Error ? err.message : String(err);
+        if (message.includes("Token 已过期")) {
+          console.log(chalk.red(`\n✗ ${message}`));
+          this.running = false;
+          return;
+        }
+        const label =
+          message.includes("AbortError") || message.includes("timeout")
+            ? "超时"
+            : message;
+        this.logStatus(Date.now() - start, label);
+      }
+      await this.sleep(SNIPE.burstIntervalMs);
+    }
+
+    if (!this.running) return;
+
+    // ── 兜底：productId 可能已变，回落轮询模式重新发现 ──
+    console.log(
+      chalk.yellow(
+        `\n   冲刺 ${SNIPE.burstDurationMs / 1000}s 未成功，回落轮询模式`
+      )
+    );
+    await this.run();
+  }
+
+  private formatRemain(ms: number): string {
+    const s = Math.max(0, Math.floor(ms / 1000));
+    const h = String(Math.floor(s / 3600)).padStart(2, "0");
+    const m = String(Math.floor((s % 3600) / 60)).padStart(2, "0");
+    const sec = String(s % 60).padStart(2, "0");
+    return `${h}:${m}:${sec}`;
+  }
+
   private findTargetProduct(
     products: Product[],
     plan: PlanLevel
@@ -167,6 +353,13 @@ export class Sniper {
 
   private handleApiError(code: number, msg: string): void {
     if (code === 555 || code === 429) {
+      // 连续限流才升级退避；翻倍只发生在这里，成功请求绝不升级
+      if (this.backoff.active) {
+        this.backoff.current = Math.min(
+          this.backoff.current * 2,
+          DEFAULTS.backoffMax
+        );
+      }
       this.activateBackoff();
       console.log(
         chalk.yellow(
@@ -195,11 +388,6 @@ export class Sniper {
     this.backoff.active = true;
   }
 
-  private resetBackoff(): void {
-    this.backoff.current = DEFAULTS.backoffInitial;
-    this.backoff.active = false;
-  }
-
   private decayBackoff(): void {
     // 逐步恢复：每次成功请求将退避时间减半
     if (!this.backoff.active) return;
@@ -215,10 +403,6 @@ export class Sniper {
   private async wait(): Promise<void> {
     if (this.backoff.active) {
       await this.sleep(this.backoff.current);
-      this.backoff.current = Math.min(
-        this.backoff.current * 2,
-        DEFAULTS.backoffMax
-      );
       return;
     }
     const { intervalMin, intervalMax } = this.options;
